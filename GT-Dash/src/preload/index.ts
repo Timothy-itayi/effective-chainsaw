@@ -28,6 +28,28 @@ export interface GT7API {
   // Settings
   getSettings: () => Promise<Settings>;
   saveSettings: (settings: Settings) => Promise<void>;
+  getPsIP: () => Promise<string>;
+  setPsIP: (psIP: string) => Promise<void>;
+  
+  // Track management
+  getAllTracks: () => Promise<any[]>;
+  getTracksByRegion: () => Promise<Record<string, any[]>>;
+  getAllRegions: () => Promise<string[]>;
+  selectTrack: (trackId: string) => Promise<void>;
+  getSelectedTrackId: () => Promise<string | null>;
+  onTrackSelected: (callback: (track: any) => void) => void;
+  removeTrackSelectedListener: () => void;
+  
+  // Track capture
+  startTrackCapture: (trackId: string) => Promise<void>;
+  stopTrackCapture: () => Promise<void>;
+  processAndSaveTrackCapture: () => Promise<any>;
+  getCaptureStatus: () => Promise<any>;
+  onCaptureStatusChanged: (callback: (status: any) => void) => void;
+  removeCaptureStatusListener: () => void;
+  loadTrackMap: (trackId: string) => Promise<any>;
+  getAllTrackMaps: () => Promise<any[]>;
+  saveTrackMapSectors: (trackId: string, sectorFractions: number[]) => Promise<void>;
 }
 
 const api: GT7API = {
@@ -63,6 +85,35 @@ const api: GT7API = {
 
   getSettings: () => ipcRenderer.invoke('getSettings'),
   saveSettings: (settings: Settings) => ipcRenderer.invoke('saveSettings', settings),
+  getPsIP: () => ipcRenderer.invoke('getPsIP'),
+  setPsIP: (psIP: string) => ipcRenderer.invoke('setPsIP', psIP),
+  
+  getAllTracks: () => ipcRenderer.invoke('getAllTracks'),
+  getTracksByRegion: () => ipcRenderer.invoke('getTracksByRegion'),
+  getAllRegions: () => ipcRenderer.invoke('getAllRegions'),
+  selectTrack: (trackId: string) => ipcRenderer.invoke('selectTrack', trackId),
+  getSelectedTrackId: () => ipcRenderer.invoke('getSelectedTrackId'),
+  onTrackSelected: (callback) => {
+    ipcRenderer.on('trackSelected', (_, track) => callback(track));
+  },
+  removeTrackSelectedListener: () => {
+    ipcRenderer.removeAllListeners('trackSelected');
+  },
+  
+  startTrackCapture: (trackId: string) => ipcRenderer.invoke('startTrackCapture', trackId),
+  stopTrackCapture: () => ipcRenderer.invoke('stopTrackCapture'),
+  processAndSaveTrackCapture: () => ipcRenderer.invoke('processAndSaveTrackCapture'),
+  getCaptureStatus: () => ipcRenderer.invoke('getCaptureStatus'),
+  onCaptureStatusChanged: (callback) => {
+    ipcRenderer.on('captureStatusChanged', (_, status) => callback(status));
+  },
+  removeCaptureStatusListener: () => {
+    ipcRenderer.removeAllListeners('captureStatusChanged');
+  },
+  loadTrackMap: (trackId: string) => ipcRenderer.invoke('loadTrackMap', trackId),
+  getAllTrackMaps: () => ipcRenderer.invoke('getAllTrackMaps'),
+  saveTrackMapSectors: (trackId: string, sectorFractions: number[]) => 
+    ipcRenderer.invoke('saveTrackMapSectors', trackId, sectorFractions),
 };
 
 contextBridge.exposeInMainWorld('gt7', api);

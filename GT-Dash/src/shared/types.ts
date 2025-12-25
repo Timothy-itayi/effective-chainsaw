@@ -26,6 +26,31 @@ export interface TelemetryPacket {
   fuelCapacity: number;
   fuelLevel: number;
   
+  // Tire data
+  tireTemperatures?: {
+    frontLeft: number;
+    frontRight: number;
+    rearLeft: number;
+    rearRight: number;
+  };
+  tireCompound?: 'soft' | 'medium' | 'hard' | 'intermediate' | 'wet' | 'unknown';
+  
+  // Session info
+  sessionType?: 'race' | 'time_trial' | 'practice' | 'qualifying' | 'unknown';
+  
+  // Sector times (calculated)
+  sector1Time?: number;
+  sector2Time?: number;
+  sector3Time?: number;
+  currentSector?: 1 | 2 | 3;
+  
+  // Track info (detected)
+  trackName?: string;
+  trackRegion?: string;
+  
+  // Car name (looked up)
+  carName?: string;
+  
   // Additional useful fields
   packetId: number;
   timestamp: number;

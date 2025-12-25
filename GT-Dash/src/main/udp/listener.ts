@@ -1,7 +1,7 @@
 // UDP listener for GT7 telemetry packets
 import dgram from 'dgram';
 import { decrypt } from './salsa20';
-import { parsePacket } from './parser';
+import { parsePacket, ParsedTelemetry } from './parser';
 import { TelemetryPacket } from '../../shared/types';
 import { UDP_PORT, UDP_SEND_PORT, HEARTBEAT_INTERVAL_MS } from '../../shared/constants';
 
@@ -9,13 +9,13 @@ export class GT7Listener {
   private socket: dgram.Socket | null = null;
   private psIP: string | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
-  private onPacketCallback: ((packet: TelemetryPacket) => void) | null = null;
+  private onPacketCallback: ((packet: ParsedTelemetry) => void) | null = null;
   private isRunning: boolean = false;
 
   /**
    * Start listening for GT7 UDP packets
    */
-  start(psIP: string, onPacket: (packet: TelemetryPacket) => void): void {
+  start(psIP: string, onPacket: (packet: ParsedTelemetry) => void): void {
     if (this.isRunning) {
       this.stop();
     }

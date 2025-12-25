@@ -1,205 +1,511 @@
-// Main React App component
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { TelemetryPacket, ConnectionStatus } from '../shared/types';
 import './App.css';
+
+interface LapRecord {
+  lapNumber: number;
+  time: number; // in milliseconds
+  isBest: boolean;
+}
 
 function App() {
   const [telemetry, setTelemetry] = useState<TelemetryPacket | null>(null);
   const [connected, setConnected] = useState(false);
-  const [psIP, setPsIP] = useState('192.168.0.194'); // Default from your test
+  const [psIP, setPsIP] = useState('192.168.0.194'); // Will be loaded from persistence
+  const [selectedTrackId, setSelectedTrackId] = useState<string>('');
+  const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
+  const [tracks, setTracks] = useState<any[]>([]);
+  const [tracksByRegion, setTracksByRegion] = useState<Record<string, any[]>>({});
+  const [regions, setRegions] = useState<string[]>([]);
+  const [lapTimes, setLapTimes] = useState<LapRecord[]>([]);
+  const lastLapTimeRef = useRef<number>(0);
+  const [captureStatus, setCaptureStatus] = useState<any>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>({
     connected: false,
     psIP: null,
     lastPacketTime: null,
   });
-  const [packetCount, setPacketCount] = useState(0);
 
   useEffect(() => {
-    // Set up telemetry listener
-    window.gt7.onTelemetry((data: TelemetryPacket) => {
-      setTelemetry(data);
-      setPacketCount(prev => prev + 1);
+    // Load tracks and regions
+    window.gt7.getAllTracks().then(setTracks);
+    window.gt7.getTracksByRegion().then(setTracksByRegion);
+    window.gt7.getAllRegions().then(setRegions);
+    
+    // Load persisted track selection and PS IP
+    window.gt7.getSelectedTrackId().then((trackId) => {
+      if (trackId) {
+        setSelectedTrackId(trackId);
+        // Find region for selected track
+        window.gt7.getAllTracks().then((allTracks) => {
+          const track = allTracks.find(t => t.id === trackId);
+          if (track) {
+            setSelectedRegion(track.region);
+            // Also select the track in the backend
+            window.gt7.selectTrack(trackId);
+          }
+        });
+      }
+    });
+    
+    // Load persisted PS IP
+    window.gt7.getPsIP().then((ip) => {
+      if (ip) {
+        setPsIP(ip);
+      }
     });
 
-    // Set up connection status listener
+    let lastSeen = 0;
+
+    window.gt7.onTelemetry((data: TelemetryPacket) => {
+      setTelemetry(data);
+      
+      // Track completed laps: detect when lastLapTime changes and is valid
+      if (data.lastLapTime > 0 && data.lastLapTime !== lastLapTimeRef.current) {
+        const isBest = data.lastLapTime === data.bestLapTime;
+        
+        setLapTimes(prev => {
+          // Determine lap number: if currentLap > 0, use currentLap - 1 (the lap that just completed)
+          // Otherwise, use the next sequential number
+          const newLapNumber = data.currentLap > 0 
+            ? data.currentLap - 1 
+            : (prev.length > 0 ? Math.max(...prev.map(l => l.lapNumber)) + 1 : 1);
+          
+          // Check if this lap is already recorded (avoid duplicates)
+          const exists = prev.some(lap => lap.lapNumber === newLapNumber);
+          if (exists) {
+            console.log('Lap already exists:', newLapNumber);
+            return prev;
+          }
+          
+          console.log('Recording new lap:', { lapNumber: newLapNumber, time: data.lastLapTime, isBest });
+          
+          // Add new lap, mark previous best as false if this is new best
+          const updated = prev.map(lap => ({ ...lap, isBest: false }));
+          updated.push({
+            lapNumber: newLapNumber,
+            time: data.lastLapTime,
+            isBest: isBest,
+          });
+          
+          // Sort by lap number descending (most recent first)
+          return updated.sort((a, b) => b.lapNumber - a.lapNumber);
+        });
+        
+        lastLapTimeRef.current = data.lastLapTime;
+      }
+      
+      // Debug: log tire temps if available
+      if (data.tireTemperatures) {
+        console.log('Tire temps:', data.tireTemperatures);
+      }
+    });
+
     window.gt7.onConnectionChange((status: ConnectionStatus) => {
       setConnectionStatus(status);
       setConnected(status.connected);
     });
 
-    // Get initial connection status
     window.gt7.getConnectionStatus().then((status: ConnectionStatus) => {
       setConnectionStatus(status);
       setConnected(status.connected);
     });
 
+    // Track capture status
+    window.gt7.getCaptureStatus().then((status) => {
+      setCaptureStatus(status);
+      console.log('Initial capture status:', status);
+    });
+    window.gt7.onCaptureStatusChanged((status: any) => {
+      console.log('Capture status changed:', status);
+      setCaptureStatus(status);
+    });
+
     return () => {
       window.gt7.removeTelemetryListener();
       window.gt7.removeConnectionChangeListener();
+      window.gt7.removeCaptureStatusListener();
     };
   }, []);
 
+  const handleTrackSelect = async (trackId: string) => {
+    setSelectedTrackId(trackId);
+    await window.gt7.selectTrack(trackId);
+    // Update selected region based on track
+    const track = tracks.find(t => t.id === trackId);
+    if (track) {
+      setSelectedRegion(track.region);
+    }
+  };
+
+  const handleRegionSelect = (region: string) => {
+    setSelectedRegion(region);
+    // Clear track selection when changing regions
+    setSelectedTrackId('');
+    window.gt7.selectTrack('');
+  };
+
   const handleConnect = async () => {
     if (!psIP.trim()) {
-      alert('Please enter PlayStation IP address');
+      alert('Enter PlayStation IP');
       return;
     }
-
     const success = await window.gt7.connect(psIP.trim());
-    if (!success) {
-      alert('Failed to connect. Make sure GT7 is running and telemetry is enabled.');
-    }
+    if (!success) alert('Connection failed. Check IP/GT7.');
   };
 
   const handleDisconnect = async () => {
     await window.gt7.disconnect();
-    setPacketCount(0);
+    // Clear lap times on disconnect
+    setLapTimes([]);
+    lastLapTimeRef.current = 0;
+  };
+
+  const handleStartCapture = async () => {
+    if (!selectedTrackId) {
+      alert('Please select a track first');
+      return;
+    }
+    
+    // Check if connected (needed for UDP packets during replay)
+    if (!connected) {
+      const proceed = confirm('You need to be connected to GT7 for capture to work.\n\nMake sure:\n1. GT7 is running\n2. You are connected (green indicator)\n3. Replay is playing\n\nClick OK to try anyway, or Cancel to connect first.');
+      if (!proceed) return;
+    }
+    
+    try {
+      console.log('Starting capture for track:', selectedTrackId);
+      await window.gt7.startTrackCapture(selectedTrackId);
+      // Refresh capture status after starting
+      const status = await window.gt7.getCaptureStatus();
+      setCaptureStatus(status);
+      console.log('Capture started:', status);
+      
+      if (!status || !status.isActive) {
+        alert('Capture did not start. Check console for errors.');
+      }
+    } catch (error) {
+      console.error('Failed to start capture:', error);
+      alert(`Failed to start capture: ${error}. Make sure GT7 is running and connected.`);
+    }
+  };
+
+  const handleStopCapture = async () => {
+    try {
+      await window.gt7.stopTrackCapture();
+      // Refresh capture status after stopping
+      const status = await window.gt7.getCaptureStatus();
+      setCaptureStatus(status);
+      console.log('Capture stopped:', status);
+    } catch (error) {
+      console.error('Failed to stop capture:', error);
+    }
+  };
+
+  const handleProcessCapture = async () => {
+    const trackMap = await window.gt7.processAndSaveTrackCapture();
+    if (trackMap) {
+      alert(`Track map saved!\nLength: ${trackMap.lengthMeters.toFixed(1)}m\nPoints: ${trackMap.centerline.length}`);
+    } else {
+      alert('No capture data to process');
+    }
   };
 
   return (
-    <div className="app">
-      <header className="header">
-        <div className="header-top">
-          <h1>GT7 Delta Dashboard</h1>
-          <div className="connection-controls">
-            <input
-              type="text"
-              placeholder="PlayStation IP"
-              value={psIP}
-              onChange={(e) => setPsIP(e.target.value)}
-              disabled={connected}
-              className="ip-input"
-            />
-            {!connected ? (
-              <button onClick={handleConnect} className="btn btn-connect">
-                Connect
-              </button>
-            ) : (
-              <button onClick={handleDisconnect} className="btn btn-disconnect">
-                Disconnect
-              </button>
-            )}
-            <div className={`status-indicator ${connected ? 'connected' : 'disconnected'}`} />
-            <span className="status-text">{connected ? 'Connected' : 'Disconnected'}</span>
-          </div>
+    <div className="racing-ui">
+      {/* Top Status Bar (Pit Wall) */}
+      <header className="pit-wall">
+        <div className="brand">
+          <span className="accent">GT7</span> DELTA
         </div>
-        {connected && (
-          <div className="header-stats">
-            <span>Packets: {packetCount.toLocaleString()}</span>
-            {connectionStatus.lastPacketTime && (
-              <span>
-                Last: {new Date(connectionStatus.lastPacketTime).toLocaleTimeString()}
-              </span>
-            )}
+        
+        <div className="connection-cluster">
+          {/* Region Pills */}
+          <div className="region-pills">
+            {regions.map(region => (
+              <button
+                key={region}
+                onClick={() => handleRegionSelect(region)}
+                className={`region-pill ${selectedRegion === region ? 'active' : ''}`}
+                disabled={captureStatus?.isActive}
+              >
+                {region}
+              </button>
+            ))}
           </div>
-        )}
+          
+          {/* Track Selection - shown when region is selected */}
+          {selectedRegion && tracksByRegion[selectedRegion] && (
+            <div className="track-selector">
+              {tracksByRegion[selectedRegion].map(track => (
+                <button
+                  key={track.id}
+                  onClick={() => handleTrackSelect(track.id)}
+                  className={`track-pill ${selectedTrackId === track.id ? 'active' : ''}`}
+                  disabled={captureStatus?.isActive}
+                  title={track.name}
+                >
+                  {track.name}
+                </button>
+              ))}
+            </div>
+          )}
+          
+          {/* Show selected track if no region selected but track is set */}
+          {!selectedRegion && selectedTrackId && (
+            <div className="selected-track-display">
+              {tracks.find(t => t.id === selectedTrackId)?.name || selectedTrackId}
+            </div>
+          )}
+          
+          <input
+            type="text"
+            value={psIP}
+            onChange={(e) => {
+              const newIP = e.target.value;
+              setPsIP(newIP);
+              // Persist PS IP
+              window.gt7.setPsIP(newIP);
+            }}
+            disabled={connected}
+            className="ip-display"
+            placeholder="PS5 IP ADDRESS"
+          />
+          {!connected ? (
+            <button onClick={handleConnect} className="btn btn-connect">INIT LINK</button>
+          ) : (
+            <button onClick={handleDisconnect} className="btn btn-disconnect">UNLINK</button>
+          )}
+          <div className={`status-led ${connected ? 'active' : ''}`} />
+        </div>
+        
+        {/* Track Capture Controls */}
+        <div className="capture-cluster">
+          {captureStatus?.isActive ? (
+            <>
+              <div className="capture-status">
+                <span className="capture-indicator active">●</span>
+                <span className="capture-info">
+                  Recording {captureStatus.trackId} ({captureStatus.points.length} points)
+                </span>
+              </div>
+              <button onClick={handleStopCapture} className="btn btn-capture-stop">STOP CAPTURE</button>
+            </>
+          ) : (
+            <>
+              <button 
+                onClick={handleStartCapture} 
+                className="btn btn-capture-start"
+                disabled={!selectedTrackId}
+                title={!selectedTrackId ? 'Select a track first' : 'Start recording track data from replay. Make sure GT7 is connected and replay is playing.'}
+              >
+                START CAPTURE
+              </button>
+              {captureStatus && captureStatus.points && captureStatus.points.length > 0 && (
+                <button onClick={handleProcessCapture} className="btn btn-capture-process">
+                  PROCESS & SAVE ({captureStatus.points.length})
+                </button>
+              )}
+            </>
+          )}
+        </div>
       </header>
 
-      <main className="main-content">
+      {/* Main Dashboard */}
+      <main className="dash-grid">
         {connected && telemetry ? (
-          <div className="dashboard">
-            {/* Primary Metrics - Large Display */}
-            <section className="primary-metrics">
-              <MetricCard
-                label="Speed"
-                value={`${telemetry.speedKmh.toFixed(1)}`}
-                unit="km/h"
-                large
-                color="#4CAF50"
-              />
-              <MetricCard
-                label="RPM"
-                value={Math.round(telemetry.rpm).toLocaleString()}
-                unit="rpm"
-                large
-                color="#2196F3"
-              />
-              <MetricCard
-                label="Gear"
-                value={telemetry.gear === -1 ? 'R' : telemetry.gear === 0 ? 'N' : telemetry.gear.toString()}
-                large
-                color="#FF9800"
-              />
-            </section>
-
-            {/* Inputs Section */}
-            <section className="inputs-section">
-              <h2>Inputs</h2>
-              <div className="metric-grid">
-                <ProgressMetric
-                  label="Throttle"
-                  value={telemetry.throttle}
-                  color="#4CAF50"
-                />
-                <ProgressMetric
-                  label="Brake"
-                  value={telemetry.brake}
-                  color="#f44336"
-                />
+          <>
+            {/* LEFT COLUMN: LAP TIMES */}
+            <div className="col-laps">
+              <div className="panel timing-board">
+                <h3><span className="skew">LAP TIMING</span></h3>
+                {(() => {
+                  // Calculate fastest lap and most recent lap for color coding
+                  const fastestLap = lapTimes.length > 0 
+                    ? lapTimes.reduce((fastest, lap) => lap.time < fastest.time ? lap : fastest)
+                    : null;
+                  const mostRecentLap = lapTimes.length > 0 ? lapTimes[0] : null;
+                  const prevLap = lapTimes.length > 1 ? lapTimes[1] : null; // Second most recent
+                  
+                  // Determine current lap color
+                  let currentColorClass = '';
+                  if (telemetry.lastLapTime > 0) {
+                    if (telemetry.lastLapTime === telemetry.bestLapTime) {
+                      currentColorClass = 'best'; // Green - best lap
+                    } else if (fastestLap && telemetry.lastLapTime === fastestLap.time) {
+                      currentColorClass = 'fastest'; // Purple - fastest lap
+                    } else if (mostRecentLap && telemetry.lastLapTime === mostRecentLap.time) {
+                      currentColorClass = 'recent'; // Blue - most recent
+                    }
+                    // White is default (no class)
+                  }
+                  
+                  // Determine previous lap color
+                  let prevColorClass = '';
+                  if (prevLap) {
+                    if (prevLap.isBest) {
+                      prevColorClass = 'best'; // Green
+                    } else if (fastestLap && prevLap.time === fastestLap.time) {
+                      prevColorClass = 'fastest'; // Purple
+                    }
+                    // White is default (no class)
+                  }
+                  
+                  return (
+                    <>
+                      <div className="time-row">
+                        <span className="label">CURRENT</span>
+                        <span className={`value ${currentColorClass}`}>{formatLapTime(telemetry.lastLapTime)}</span>
+                      </div>
+                      <div className="time-row">
+                        <span className="label">PREV</span>
+                        <span className={`value ${prevColorClass}`}>
+                          {prevLap ? formatLapTime(prevLap.time) : '--:--.---'}
+                        </span>
+                      </div>
+                      <div className="time-row">
+                        <span className="label">BEST</span>
+                        <span className="value best">{formatLapTime(telemetry.bestLapTime)}</span>
+                      </div>
+                      <div className="time-row small">
+                        <span className="label">LAPS</span>
+                        <span className="value">{telemetry.currentLap}</span>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
-            </section>
 
-            {/* Lap Information */}
-            <section className="lap-section">
-              <h2>Lap Information</h2>
-              <div className="metric-grid">
-                <MetricCard label="Current Lap" value={telemetry.currentLap.toString()} />
-                <MetricCard
-                  label="Last Lap Time"
-                  value={formatLapTime(telemetry.lastLapTime)}
-                />
-                <MetricCard
-                  label="Best Lap Time"
-                  value={formatLapTime(telemetry.bestLapTime)}
-                />
-                <MetricCard
-                  label="Lap Distance"
-                  value={`${telemetry.lapDistance.toFixed(0)} m`}
-                />
+              <div className="panel lap-list-panel">
+                <h3><span className="skew">LAP TIMES</span></h3>
+                <div className="lap-list">
+                  {lapTimes.length > 0 ? (() => {
+                    // Find fastest lap (lowest time)
+                    const fastestLap = lapTimes.reduce((fastest, lap) => 
+                      lap.time < fastest.time ? lap : fastest
+                    );
+                    
+                    return lapTimes.map((lap, index) => {
+                      const formattedTime = formatLapTime(lap.time);
+                      const isMostRecent = index === 0; // First in sorted array (descending)
+                      const isFastest = lap.time === fastestLap.time;
+                      const isBest = lap.isBest;
+                      
+                      // Determine color class
+                      let colorClass = '';
+                      if (isBest) {
+                        colorClass = 'best'; // Green
+                      } else if (isFastest) {
+                        colorClass = 'fastest'; // Purple
+                      } else if (isMostRecent) {
+                        colorClass = 'recent'; // Blue
+                      }
+                      // White is default (no class)
+                      
+                      return (
+                        <div 
+                          key={lap.lapNumber} 
+                          className={`lap-item ${colorClass}`}
+                        >
+                          <span className="lap-number">L{lap.lapNumber}</span>
+                          <span className="lap-time">{formattedTime || '--:--.---'}</span>
+                          {isBest && <span className="lap-badge">BEST</span>}
+                        </div>
+                      );
+                    });
+                  })() : (
+                    <div className="lap-list-empty">No laps recorded yet</div>
+                  )}
+                </div>
               </div>
-            </section>
 
-            {/* Vehicle Information */}
-            <section className="vehicle-section">
-              <h2>Vehicle</h2>
-              <div className="metric-grid">
-                <MetricCard label="Car ID" value={telemetry.carId.toString()} />
-                <MetricCard
-                  label="Fuel Level"
-                  value={`${(telemetry.fuelLevel * 100).toFixed(1)}%`}
-                />
-                <MetricCard
-                  label="Fuel Capacity"
-                  value={`${telemetry.fuelCapacity.toFixed(1)} L`}
-                />
-                <MetricCard label="Packet ID" value={telemetry.packetId.toString()} />
+              <div className="panel sector-board">
+                 <h3><span className="skew">SECTORS</span></h3>
+                 <SectorRow num={1} time={telemetry.sector1Time} active={telemetry.currentSector === 1} />
+                 <SectorRow num={2} time={telemetry.sector2Time} active={telemetry.currentSector === 2} />
+                 <SectorRow num={3} time={telemetry.sector3Time} active={telemetry.currentSector === 3} />
               </div>
-            </section>
 
-            {/* Position */}
-            <section className="position-section">
-              <h2>Position</h2>
-              <div className="metric-grid">
-                <MetricCard label="X" value={telemetry.position.x.toFixed(2)} />
-                <MetricCard label="Y" value={telemetry.position.y.toFixed(2)} />
-                <MetricCard label="Z" value={telemetry.position.z.toFixed(2)} />
+              <div className="panel track-info">
+                 <div className="info-item">
+                    <label>MAP</label>
+                    <span>{telemetry.trackName || "NO DATA"}</span>
+                 </div>
+                 <div className="info-item">
+                    <label>CAR</label>
+                    <span>{telemetry.carName || `ID: ${telemetry.carId}`}</span>
+                 </div>
               </div>
-            </section>
-          </div>
+            </div>
+
+            {/* RIGHT COLUMN: TIRE TEMPERATURES */}
+            <div className="col-tires">
+               <div className="panel tire-panel">
+                  <h3><span className="skew">THERMALS</span></h3>
+                  {telemetry.tireTemperatures ? (
+                    <div className="tire-chassis">
+                      <TireBox pos="FL" temp={telemetry.tireTemperatures.frontLeft} />
+                      <TireBox pos="FR" temp={telemetry.tireTemperatures.frontRight} />
+                      <div className="car-outline" />
+                      <TireBox pos="RL" temp={telemetry.tireTemperatures.rearLeft} />
+                      <TireBox pos="RR" temp={telemetry.tireTemperatures.rearRight} />
+                    </div>
+                  ) : (
+                    <div className="no-data">NO SENSORS</div>
+                  )}
+               </div>
+
+               <div className="panel fuel-panel">
+                  <h3><span className="skew">FUEL CELL</span></h3>
+                  <div className="fuel-gauge">
+                    {(() => {
+                      // Calculate fuel percentage: fuelLevel might be in liters or fraction
+                      // If fuelCapacity > 0, assume fuelLevel is in liters and calculate percentage
+                      // Otherwise, assume fuelLevel is already a fraction (0-1)
+                      const fuelPercent = telemetry.fuelCapacity > 0 
+                        ? Math.max(0, Math.min(100, (telemetry.fuelLevel / telemetry.fuelCapacity) * 100))
+                        : Math.max(0, Math.min(100, telemetry.fuelLevel * 100));
+                      
+                      // Color based on fuel level
+                      let fuelColor = '#34c759'; // Green
+                      if (fuelPercent < 25) fuelColor = '#ff3b30'; // Red
+                      else if (fuelPercent < 50) fuelColor = '#ffcc00'; // Yellow
+                      
+                      return (
+                        <div 
+                          className="fuel-bar" 
+                          style={{
+                            width: `${fuelPercent}%`,
+                            backgroundColor: fuelColor,
+                            transition: 'width 0.2s linear, background-color 0.3s ease'
+                          }} 
+                        />
+                      );
+                    })()}
+                  </div>
+                  <div className="fuel-stats">
+                    <div className="stat">
+                        {(() => {
+                          const fuelPercent = telemetry.fuelCapacity > 0 
+                            ? Math.max(0, Math.min(100, (telemetry.fuelLevel / telemetry.fuelCapacity) * 100))
+                            : Math.max(0, Math.min(100, telemetry.fuelLevel * 100));
+                          return <span className="val">{fuelPercent.toFixed(1)}%</span>;
+                        })()}
+                        <span className="lbl">LEVEL</span>
+                    </div>
+                    <div className="stat">
+                        <span className="val">{telemetry.fuelCapacity > 0 ? telemetry.fuelCapacity.toFixed(1) : '--'}L</span>
+                        <span className="lbl">CAP</span>
+                    </div>
+                  </div>
+               </div>
+            </div>
+          </>
         ) : (
           <div className="empty-state">
-            {connected ? (
-              <div>
-                <div className="spinner" />
-                <p>Waiting for telemetry data...</p>
-                <p className="hint">Make sure GT7 is running and you're in a race/time trial</p>
-              </div>
-            ) : (
-              <div>
-                <p>Connect to GT7 to start receiving telemetry</p>
-                <p className="hint">Enter your PlayStation IP address and click Connect</p>
-              </div>
-            )}
+             <div className="scan-line"></div>
+             <h1>AWAITING TELEMETRY</h1>
+             <p>{connected ? "SESSION NOT STARTED" : "SYSTEM DISCONNECTED"}</p>
           </div>
         )}
       </main>
@@ -207,64 +513,49 @@ function App() {
   );
 }
 
-function MetricCard({
-  label,
-  value,
-  unit,
-  large,
-  color,
-}: {
-  label: string;
-  value: string;
-  unit?: string;
-  large?: boolean;
-  color?: string;
-}) {
+// --- Sub Components ---
+
+function SectorRow({ num, time, active }: { num: number, time?: number, active: boolean }) {
   return (
-    <div className={`metric-card ${large ? 'metric-card-large' : ''}`} style={{ borderTopColor: color }}>
-      <div className="metric-label">{label}</div>
-      <div className="metric-value" style={{ color }}>
-        {value}
-        {unit && <span className="metric-unit">{unit}</span>}
-      </div>
+    <div className={`sector-row ${active ? 'active' : ''}`}>
+      <span className="sec-id">S{num}</span>
+      <span className="sec-time">{time ? formatSectorTime(time) : '--.---'}</span>
     </div>
   );
 }
 
-function ProgressMetric({
-  label,
-  value,
-  color,
-}: {
-  label: string;
-  value: number;
-  color: string;
-}) {
-  const percentage = Math.round(value * 100);
+function TireBox({ pos, temp }: { pos: string, temp: number }) {
+  // Simple heat map logic
+  let color = 'var(--text-dim)'; 
+  if (temp > 70) color = '#5fc9f8'; // Cold/Warm
+  if (temp > 85) color = '#34c759'; // Optimal
+  if (temp > 105) color = '#ffcc00'; // Hot
+  if (temp > 120) color = '#ff3b30'; // Overheat
+
   return (
-    <div className="metric-card">
-      <div className="metric-label">{label}</div>
-      <div className="progress-container">
-        <div
-          className="progress-bar"
-          style={{
-            width: `${percentage}%`,
-            backgroundColor: color,
-          }}
-        />
-        <span className="progress-text">{percentage}%</span>
-      </div>
+    <div className="tire-box">
+       <span className="tire-pos">{pos}</span>
+       <span className="tire-temp" style={{ color }}>{temp.toFixed(0)}°</span>
     </div>
   );
 }
+
+// --- Helpers ---
 
 function formatLapTime(ms: number): string {
-  if (ms === 0 || ms === -1) return '--:--.---';
-  const totalSeconds = ms / 1000;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = Math.floor(totalSeconds % 60);
-  const milliseconds = Math.floor((totalSeconds % 1) * 1000);
-  return `${minutes}:${seconds.toString().padStart(2, '0')}.${milliseconds.toString().padStart(3, '0')}`;
+  if (ms <= 0) return '-:--.---';
+  // Use integer arithmetic to avoid floating point precision errors
+  const totalMs = Math.round(ms); // Round to nearest millisecond
+  const totalSeconds = Math.floor(totalMs / 1000);
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  const mil = totalMs % 1000; // Direct modulo, no floating point math
+  return `${m}:${s.toString().padStart(2, '0')}.${mil.toString().padStart(3, '0')}`;
+}
+
+function formatSectorTime(ms: number): string {
+  const s = (ms / 1000).toFixed(3);
+  return s;
 }
 
 export default App;
