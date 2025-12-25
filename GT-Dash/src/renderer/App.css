@@ -203,6 +203,13 @@ body {
   color: var(--color-text-muted);
 }
 
+.capture-position {
+  margin-left: 8px;
+  color: var(--color-info);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+}
+
 .btn-capture-start {
   background: var(--color-info);
   color: #fff;
@@ -459,6 +466,34 @@ body {
   color: #fff;
 }
 .sec-id { color: var(--color-text-muted); font-size: 11px; }
+
+/* Track Info Panel */
+.track-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.info-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+}
+
+.info-item label {
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.info-item span {
+  color: var(--color-text-main);
+  font-family: var(--font-mono);
+}
+
+.track-map-status {
+  color: var(--color-good) !important;
+}
 
 /* --- Right Column: Tires --- */
 .col-tires {

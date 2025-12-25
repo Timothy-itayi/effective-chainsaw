@@ -20,6 +20,7 @@ function App() {
   const [lapTimes, setLapTimes] = useState<LapRecord[]>([]);
   const lastLapTimeRef = useRef<number>(0);
   const [captureStatus, setCaptureStatus] = useState<any>(null);
+  const [trackMap, setTrackMap] = useState<any>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>({
     connected: false,
     psIP: null,
@@ -43,6 +44,12 @@ function App() {
             setSelectedRegion(track.region);
             // Also select the track in the backend
             window.gt7.selectTrack(trackId);
+          }
+        });
+        // Load track map if available
+        window.gt7.loadTrackMap(trackId).then((map) => {
+          if (map) {
+            setTrackMap(map);
           }
         });
       }
@@ -136,6 +143,9 @@ function App() {
     if (track) {
       setSelectedRegion(track.region);
     }
+    // Load track map if available
+    const map = await window.gt7.loadTrackMap(trackId);
+    setTrackMap(map);
   };
 
   const handleRegionSelect = (region: string) => {
@@ -203,11 +213,41 @@ function App() {
   };
 
   const handleProcessCapture = async () => {
-    const trackMap = await window.gt7.processAndSaveTrackCapture();
-    if (trackMap) {
-      alert(`Track map saved!\nLength: ${trackMap.lengthMeters.toFixed(1)}m\nPoints: ${trackMap.centerline.length}`);
+    const map = await window.gt7.processAndSaveTrackCapture();
+    if (map) {
+      setTrackMap(map);
+      if (map.lengthMeters < 100) {
+        alert(`Warning: Track length seems too short (${map.lengthMeters.toFixed(1)}m).\n\nThis might mean:\n- Not enough points captured\n- Replay didn't complete a full lap\n- Speed filter removed too many points\n\nTry capturing again with a full clean lap.`);
+      } else {
+        // Prompt for sector times
+        const s1Time = prompt('Enter Sector 1 time in seconds (e.g., 20.6):');
+        const s2Time = prompt('Enter Sector 2 cumulative time in seconds (e.g., 62.6 for 1:02.6):');
+        const totalTime = prompt('Enter total lap time in seconds (e.g., 99.337 for 1:39.337):');
+        
+        if (s1Time && s2Time && totalTime) {
+          const s1 = parseFloat(s1Time);
+          const s2 = parseFloat(s2Time);
+          const total = parseFloat(totalTime);
+          
+          if (!isNaN(s1) && !isNaN(s2) && !isNaN(total) && total > 0) {
+            const s1Fraction = s1 / total;
+            const s2Fraction = s2 / total;
+            
+            await window.gt7.saveTrackMapSectors(map.trackId, [s1Fraction, s2Fraction]);
+            // Reload track map to get updated sectors
+            const updatedMap = await window.gt7.loadTrackMap(map.trackId);
+            setTrackMap(updatedMap);
+            
+            alert(`Track map saved!\n\nLength: ${map.lengthMeters.toFixed(1)}m\nPoints: ${map.centerline.length}\n\nSector fractions set:\n- S1: ${(s1Fraction * 100).toFixed(1)}%\n- S2: ${(s2Fraction * 100).toFixed(1)}%\n- S3: ${((1 - s2Fraction) * 100).toFixed(1)}%`);
+          } else {
+            alert(`Track map saved!\n\nLength: ${map.lengthMeters.toFixed(1)}m\nPoints: ${map.centerline.length}\n\nSector fractions not set (invalid input). You can set them later.`);
+          }
+        } else {
+          alert(`Track map saved!\n\nLength: ${map.lengthMeters.toFixed(1)}m\nPoints: ${map.centerline.length}\n\nSector fractions not set. You can set them later using the API.`);
+        }
+      }
     } else {
-      alert('No capture data to process');
+      alert('No capture data to process. Make sure you captured points during replay.');
     }
   };
 
@@ -286,7 +326,13 @@ function App() {
               <div className="capture-status">
                 <span className="capture-indicator active">●</span>
                 <span className="capture-info">
-                  Recording {captureStatus.trackId} ({captureStatus.points.length} points)
+                  Recording {captureStatus.trackId} ({captureStatus.points?.length || 0} pts)
+                  {telemetry && (
+                    <span className="capture-position">
+                      [{telemetry.position?.x?.toFixed(0) || '?'}, {telemetry.position?.z?.toFixed(0) || '?'}] 
+                      @ {telemetry.speedKmh?.toFixed(0) || 0} km/h
+                    </span>
+                  )}
                 </span>
               </div>
               <button onClick={handleStopCapture} className="btn btn-capture-stop">STOP CAPTURE</button>
@@ -435,6 +481,27 @@ function App() {
                     <label>CAR</label>
                     <span>{telemetry.carName || `ID: ${telemetry.carId}`}</span>
                  </div>
+                 {trackMap && (
+                   <>
+                     <div className="info-item">
+                        <label>TRACK MAP</label>
+                        <span className="track-map-status">
+                          ✓ {trackMap.lengthMeters.toFixed(0)}m
+                          {trackMap.sectorFractions && trackMap.sectorFractions.length > 0 ? ' • Sectors' : ' • No sectors'}
+                        </span>
+                     </div>
+                     {trackMap.sectorFractions && trackMap.sectorFractions.length >= 2 && (
+                       <div className="info-item">
+                          <label>SECTORS</label>
+                          <span>
+                            S1: {(trackMap.sectorFractions[0] * 100).toFixed(1)}% | 
+                            S2: {((trackMap.sectorFractions[1] - trackMap.sectorFractions[0]) * 100).toFixed(1)}% | 
+                            S3: {((1 - trackMap.sectorFractions[1]) * 100).toFixed(1)}%
+                          </span>
+                       </div>
+                     )}
+                   </>
+                 )}
               </div>
             </div>
 

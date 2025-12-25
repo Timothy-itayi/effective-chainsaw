@@ -108,3 +108,25 @@ export interface Settings {
   defaultTireCompound: string;
 }
 
+export interface TrackPoint {
+  x: number;
+  z: number;
+  d: number; // normalized distance along track (0-1)
+  speed?: number;
+  timestamp?: number;
+}
+
+export interface TrackMap {
+  trackId: string;
+  lengthMeters: number;
+  centerline: TrackPoint[];
+  sectorFractions: number[]; // [s1End, s2End] as fractions 0-1
+  capturedAt: string;
+}
+
+export interface CaptureSession {
+  trackId: string;
+  points: TrackPoint[];
+  startTime: number;
+  isActive: boolean;
+}

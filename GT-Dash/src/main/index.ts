@@ -85,11 +85,23 @@ ipcMain.handle('connect', async (_, psIP: string): Promise<boolean> => {
 
     listener = new GT7Listener();
     
+    // Track last capture status update time
+    let lastCaptureStatusUpdate = 0;
+    
     listener.start(psIP, (packet) => {
       lastPacketTime = Date.now();
       
       // Record track point if capture is active
       recordTrackPoint(packet);
+      
+      // Send periodic capture status updates during active capture
+      const captureStatus = getCaptureStatus();
+      if (captureStatus?.isActive && Date.now() - lastCaptureStatusUpdate > 500) {
+        lastCaptureStatusUpdate = Date.now();
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('captureStatusChanged', captureStatus);
+        }
+      }
       
       // Enrich packet with additional data
       const trackInfo = detectTrack(packet.position.x, packet.position.z);
@@ -97,12 +109,19 @@ ipcMain.handle('connect', async (_, psIP: string): Promise<boolean> => {
       const manualTrack = selectedTrackId ? getTrackById(selectedTrackId) : null;
       const finalTrack = trackInfo || manualTrack;
       
+      // Load track map if available for accurate sector timing
+      const trackMap = selectedTrackId ? loadTrackMap(selectedTrackId) : null;
+      
       // Use lapCountRaw from parser (more reliable than currentLap)
+      // Pass full trackMap with centerline for position-based distance calculation
       const sectorData = calculateSectorTimes({
         carId: packet.carId,
         lapCountRaw: packet.lapCountRaw,
         lapDistance: packet.lapDistance,
         lastLapTimeMs: packet.lastLapTime,
+        positionX: packet.position.x,
+        positionZ: packet.position.z,
+        trackMap: trackMap || undefined, // Pass full track map with centerline
       });
       const tireCompound = inferTireCompound(packet.tireTemperatures);
       

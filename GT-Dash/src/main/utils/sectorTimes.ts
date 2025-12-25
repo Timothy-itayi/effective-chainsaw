@@ -1,4 +1,5 @@
 // sectorTimes.ts
+import { TrackMap, TrackPoint } from '../../shared/types';
 
 export interface SectorData {
   sector1Time?: number; // ms (undefined until sector 1 is complete)
@@ -7,6 +8,33 @@ export interface SectorData {
   currentSector: 1 | 2 | 3;
   lapFraction: number; // 0..1
   lapLengthMeters?: number;
+}
+
+/**
+ * Find the normalized distance (0-1) along the track for a given position
+ * Returns the lap fraction based on nearest centerline point
+ */
+function getDistanceAlongTrack(centerline: TrackPoint[], posX: number, posZ: number): number {
+  if (!centerline || centerline.length === 0) {
+    return 0;
+  }
+
+  // Find nearest point on centerline
+  let minDistSq = Infinity;
+  let nearestFraction = 0;
+
+  for (const point of centerline) {
+    const dx = posX - point.x;
+    const dz = posZ - point.z;
+    const distSq = dx * dx + dz * dz;
+    
+    if (distSq < minDistSq) {
+      minDistSq = distSq;
+      nearestFraction = point.d; // d is already normalized 0-1
+    }
+  }
+
+  return nearestFraction;
 }
 
 interface SectorState {
@@ -47,12 +75,15 @@ function clamp01(x: number) {
 export function calculateSectorTimes(input: {
   carId: number;
   lapCountRaw: number;     // use parser lapCountRaw (0x74)
-  lapDistance: number;     // parser lapDistance
+  lapDistance: number;     // parser lapDistance (may be 0 in some modes)
   lastLapTimeMs: number;   // parser lastLapTime (ms)
+  positionX?: number;      // position.x for track map lookup
+  positionZ?: number;      // position.z for track map lookup
+  trackMap?: TrackMap;     // full track map with centerline for position-based distance
   now?: number;
 }): SectorData | null {
   const now = input.now ?? Date.now();
-  const { carId, lapCountRaw, lapDistance, lastLapTimeMs } = input;
+  const { carId, lapCountRaw, lapDistance, lastLapTimeMs, trackMap, positionX, positionZ } = input;
 
   if (!carId) return null;
 
@@ -74,16 +105,30 @@ export function calculateSectorTimes(input: {
     states.set(carId, st);
   }
 
+  // Use track map if available (more accurate than learning from lapDistance)
+  if (trackMap && trackMap.lengthMeters > 0) {
+    st.lapLengthMeters = trackMap.lengthMeters;
+    // Use track map sector fractions if available
+    if (trackMap.sectorFractions && trackMap.sectorFractions.length >= 2) {
+      st.s1End = trackMap.sectorFractions[0];
+      st.s2End = trackMap.sectorFractions[1];
+    }
+  }
+  
   // Detect lap completion via lapCountRaw increment
   // lapCountRaw is usually "completed laps", which is stable for timing.
   if (lapCountRaw !== st.lastLapCountRaw) {
     // Lap rolled over. If lastLapTimeMs is updated, we can learn lap length.
     // Use the lapDistance observed near rollover as a lap length estimate.
-    if (lastLapTimeMs > 0 && lastLapTimeMs !== st.lastLastLapTimeMs) {
+    // Only do this if we don't have a track map
+    if (!trackMap && lastLapTimeMs > 0 && lastLapTimeMs !== st.lastLastLapTimeMs) {
       // Only accept sane lap lengths
       if (lapDistance > 500 && lapDistance < 50000) {
         st.lapLengthMeters = lapDistance;
       }
+      st.lastLastLapTimeMs = lastLapTimeMs;
+    } else if (trackMap) {
+      // Track map provides length, just update last lap time
       st.lastLastLapTimeMs = lastLapTimeMs;
     }
 
@@ -112,11 +157,18 @@ export function calculateSectorTimes(input: {
   }
   st.lastLapDistance = lapDistance;
 
-  // Compute lap fraction if we have lap length
-  const lapFraction = st.lapLengthMeters ? clamp01(lapDistance / st.lapLengthMeters) : 0;
+  // Compute lap fraction - prefer position-based when lapDistance is 0
+  let lapFraction = 0;
+  if (trackMap?.centerline && positionX !== undefined && positionZ !== undefined) {
+    // Use position-based distance from track map centerline
+    lapFraction = getDistanceAlongTrack(trackMap.centerline, positionX, positionZ);
+  } else if (st.lapLengthMeters && lapDistance > 0) {
+    // Fall back to lapDistance if available
+    lapFraction = clamp01(lapDistance / st.lapLengthMeters);
+  }
 
-  // Sector transitions: only meaningful once lapLengthMeters known
-  if (st.lapLengthMeters) {
+  // Sector transitions: only meaningful once we have a way to compute lap fraction
+  if (st.lapLengthMeters && (lapFraction > 0 || (trackMap?.centerline && trackMap.centerline.length > 0))) {
     if (st.currentSector === 1 && lapFraction >= st.s1End) {
       st.sector1TimeMs = now - st.lapStartTs;
       st.s1Ts = now;
