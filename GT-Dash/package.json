@@ -1,0 +1,37 @@
+{
+  "name": "gt-dash",
+  "version": "1.0.0",
+  "description": "GT7 offline telemetry dashboard",
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:vite\" \"npm run dev:electron\"",
+    "dev:vite": "vite",
+    "dev:electron": "wait-on http://localhost:5173 && tsc && electron .",
+    "build": "tsc && vite build",
+    "build:main": "tsc",
+    "build:renderer": "vite build",
+    "start": "electron .",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test:udp": "node test-udp.js"
+  },
+  "dependencies": {
+    "electron-store": "^8.0.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.3.27",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^5.1.2",
+    "concurrently": "^9.2.1",
+    "electron": "^39.2.7",
+    "typescript": "^5.0.0",
+    "vite": "^7.3.0",
+    "wait-on": "^9.0.3"
+  }
+}
